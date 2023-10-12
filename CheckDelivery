@@ -1,0 +1,157 @@
+#!/bin/bash
+############################# checkdelivery ###################################
+# Проверка на наличие новых версий ПО на сервере 3нио
+#
+# В качестве необязательных параметров можно указать ключи:
+#     all        -  проверка всего ПО
+#     -u         -  обновить эталонный файл
+#     nis315    -  проверка ПО для сектора 315
+#
+#
+# Разработчик: Коряковский Д.О. НИС-315, т.1504
+# Дата последней корректировки: смотри гит
+########################################################################
+
+
+
+workPath="/arc/home/PROJECTS/DEVELOPMENT/INTEL/PC/LINUX/UTILITIES/Scripts/Shell/CheckDelivery"
+logfile="$workPath/reference"
+logfileTmp="$workPath/tmp"
+resultAll="$workPath/result_all"
+result="$workPath/result"
+nis315file="$workPath/nis315"
+mntPoint="/arc/home/TECHNOLOGY/a3nio"
+
+
+
+############################### FUNCTION ####################################
+
+abort() {
+    [ -f "$logfileTmp" ] && rm $logfileTmp
+    [ -f "$workPath/tmp.list" ] && rm $workPath/tmp.list
+    [ -f "$workPath/tmp.list.ref" ] && rm $workPath/tmp.list.ref
+
+    if [ "$1" == "erase" ]; then
+       SuperEcho -fg "Green" "\nЭталон обновлен!\n\n"
+    fi
+
+    exit
+}
+
+result() {
+    if [ -z "$res" ]; then
+       SuperEcho -fg "Green" "\nРазличий не обнаружено!\n\n"
+    else
+       SuperEcho -fg "Red" "\nОбнаружены различия!\n\n"
+       SuperEcho -fg "Red" "$res\n\n"
+    fi
+}
+
+
+############################### LIB ####################################
+
+# Файл библиотечных функций
+Utils_Lib="/opt/mfp/UTILITIES/utils.lib"
+
+# Указание взять библиотеку из текущего каталога в случае, если в указанном ранее имени файла отсутствует путь к ней
+if [ -f "./$Utils_Lib" ]; then
+    Utils_Lib="./$Utils_Lib"
+fi
+
+# Проверяем, существует ли файл библитечных функций утилит
+if [ ! -f $Utils_Lib ]; then
+    if [ -f "`dirgame $0`/`basename $Utils_Lib`" ]; then
+        Utils_Lib="`dirgame $0`/`basename $Utils_Lib`"
+    else
+        echo "ОШИБКА: Нет файла \"$Utils_Lib\"!"
+        exit 1
+    fi
+fi
+
+# Файл библиотечных функций утилит
+. $Utils_Lib
+
+
+################### MAIN ###################
+
+# Проверяем работоспособность Xdialog'a
+if Xdialog --version > /dev/null 2>&1; then
+     DIALOGNAME=Xdialog
+elif dialog --version > /dev/null 2>&1; then
+     DIALOGNAME=dialog
+else
+     SuperEcho -fg "Red" "ERROR: dialog name undefined"
+     exit 1
+fi
+
+if  ! mount | grep -q "$mntPoint"; then
+    read -p "Enter your domain name: " dUSER
+    sudo smbmount //192.168.1.160/ArhivPD "$mntPoint" -o "user=$dUSER"
+    if [ $? -ne 0 ]; then
+       abort
+    fi
+fi
+
+cd "$mntPoint/Изделия сторонних организаций"
+
+find > "$logfileTmp"
+
+if [ "$1" == "-u" ]; then
+   find > "$logfile"
+   abort erase
+fi
+
+# Диалог
+menu=""
+ls > "$workPath/tmp.list"
+sed -i '$ d' "$workPath/tmp.list"
+sed -i "s/ /-/g" "$workPath/tmp.list"
+
+if [ "$1" == "all" ]; then
+    res=$(diff "$logfileTmp" "$logfile")
+    result
+    abort
+fi
+
+
+if [ "$1" == "nis315" ]; then
+    rm "$workPath/tmp.list"
+    while read -r line; do
+        nameLists=$(echo "$line" | sed 's/-/ /g')
+        grep "$nameLists" "$workPath/reference" >> "$workPath/tmp.list"
+        grep "$nameLists" "$logfileTmp" >> "$workPath/tmp.list.ref"
+    done < "$nis315file"
+    res=$(diff "$workPath/tmp.list" "$workPath/tmp.list.ref")
+    result "$res"
+
+    if [ "$2" == "sendmail" ]; then
+       echo "Sending..."
+       sudo echo -e "DATE=$(date --rfc-3339=seconds | awk -F'+' '{print $1}')\n\n $res" | \
+            mail -v -s "CheckDelivery" -r CheckDelivery \
+            "d.koryakovsky@op.local A.Shuvaev@op.local o.turkunova@op.local D.Pal@op.local i.cyplenkova@op.local"
+    fi
+
+    abort
+else
+    i=0
+    while read -r line; do
+        menu="$menu $line  <<< off"
+        ((i++))
+    done < "$workPath/tmp.list"
+
+    choice_opt=$("$DIALOGNAME" --auto-placement --stdout --checklist "Выберите компании для проверки наличилия обновлений" 60 94 16 $menu | sed -r 's/\// /g')
+    if [ -z "$choice_opt" ]; then
+        abort
+    fi
+
+    rm "$workPath/tmp.list"
+    for cm in $choice_opt; do
+        nameLists=$(echo "$cm" | sed 's/-/ /g')
+        grep "$nameLists" "$workPath/reference" >> "$workPath/tmp.list"
+        grep "$nameLists" "$logfileTmp" >> "$workPath/tmp.list.ref"
+    done
+
+    res=$(diff "$workPath/tmp.list" "$workPath/tmp.list.ref")
+    result
+    abort
+fi
